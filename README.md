@@ -1,24 +1,32 @@
 # Knowledge Graph-Augmented Uncertainty Quantification for LLM-Based Clinical Diagnosis
 
-> Uncertainty Quantification (UQ) framework combining **token-level logits analysis**, **Conformal Candidate Prediction (CCP)**, and **Knowledge Graph (KG) random walk** to assess the reliability of LLM-generated disease diagnoses from clinical notes.
+> A knowledge graph-augmented uncertainty quantification (UQ) framework that combines LLM-derived confidence with structured biomedical evidence from PrimeKG for clinical diagnosis.
 
 ---
 
 ## Overview
 
-Large Language Models (LLMs) are increasingly used to extract diagnoses from clinical notes, but quantifying the **reliability** of each predicted diagnosis remains a challenge. This project proposes a unified UQ pipeline that fuses three complementary signals:
+Large Language Models (LLMs) are increasingly used to extract diagnoses from clinical notes, but quantifying the **reliability** of each predicted diagnosis remains a challenge. This project implements a knowledge graph-augmented uncertainty quantification (UQ) framework for LLM-based clinical diagnosis. The proposed method combines:
 
-| Signal | Description |
-|--------|-------------|
-| **Pure Logits** | Token-level probability metrics (geometric mean, sequence probability, entropy, min/max log-prob) computed via teacher forcing |
-| **CCP (Conformal Candidate Prediction)** | Measures semantic stability by branching at the first token of each diagnosis and checking if top-k alternatives remain semantically equivalent (via NLI) |
-| **KG-Augmented** | Maps diagnoses onto PrimeKG, runs Personalized PageRank / Random Walk with Restart (RWR), and scores each diagnosis by its topological plausibility |
+| Component | Description |
 
-A **Reciprocal Rank Fusion (RRF)** score additionally merges Pure Logits and KG rankings.
+|-----------|-------------|
+
+| **LLM Confidence** | Sequence-normalized mean token log probability obtained through teacher forcing |
+
+| **KG-based Clinical Plausibility** | Maps clinical entities to PrimeKG and propagates evidence using Personalized Random Walk with Restart (RWR), with coherence- and specificity-aware anchor weighting |
+
+| **KG Expansion** | Retrieves additional clinically plausible diseases from the KG and verifies them using the LLM before adding them to the candidate set |
+
+| **Confidence Fusion** | Combines LLM confidence and KG-derived confidence using a weighted fusion coefficient $\gamma$ |
+
+The framework uses PrimeKG as an external source of structured biomedical evidence rather than constructing a knowledge graph from generated responses.
 
 ### Evaluation
 
-The ground truth is constructed via **Standard Sampling** (100 stochastic samples per note) to approximate the true marginal probability of each diagnosis. All UQ methods are then evaluated against this baseline using NDCG, Kendall-τ, MRR, RBO, Precision/Recall@K, with a Qwen-72B judge for cross-method entity alignment.
+A reference confidence distribution is constructed using 100 stochastic generations per clinical note with Llama-3.1-8B-Instruct at temperature 0.6. Semantically equivalent disease entities are merged using bidirectional entailment with PubMedBERT-MNLI-MedNLI. The resulting frequency distribution serves as the reference ranking for evaluating uncertainty estimation.
+
+The primary evaluation metrics are NDCG@5, RBO, and MRR. Additional metrics include NDCG@10, Precision/Recall@5/10, and Kendall's $\tau$.
 
 ---
 
@@ -27,20 +35,38 @@ The ground truth is constructed via **Standard Sampling** (100 stochastic sample
 ```
 Clinical Note
       │
-      ├──── Step 1: Entity Extraction (Qwen-72B-AWQ)
-      │         └── Extract diseases, symptoms, PMH from note → JSONL
-      │
-      ├──── Standard Sampling (Baseline)
-      │         └── 100× stochastic generation (Llama-3.1-8B / Qwen-7B / Mistral-7B / Gemma-3-4B)
-      │             → NLI-based clustering → frequency-based UQ score
-      │
-      └──── Step 2: Combined UQ Pipeline
-                ├── [A] Pure Logits (Teacher Forcing)
-                ├── [B] CCP (Top-K branching + NLI)
-                ├── [C] KG-Augmented (PrimeKG + SapBERT mapping + RWR)
-                ├── [D] RRF Fusion
-                └── [E] KG Expansion (discover unseen diagnoses via RWR)
-                        └── Filtered by Teacher Forcing threshold
+      ├── LLM Disease Generation
+      │       └── Llama-3.1-8B-Instruct
+      │               ↓
+      │        Initial Disease Candidates
+      │               │
+      │               ├── LLM Confidence
+      │               │      └── Mean Token Log Probability
+      │               │
+      │               └──────────────────────┐
+      │                                      │
+      └── Clinical Entity Extraction         │
+              └── Qwen-2.5-72B-Instruct      │
+                      ↓                      │
+                SapBERT Mapping              │
+                      ↓                      │
+                  PrimeKG                    │
+                      ↓                      │
+             Coherence + Specificity         │
+                      ↓                      │
+                Personalized RWR             │
+                      ↓                      │
+               KG Score                      │
+                      │                      │
+                      └──── Confidence Fusion
+                                   │
+                                   ↓
+                         KG Expansion
+                                   │
+                         LLM Verification
+                                   │
+                                   ↓
+                         Final Ranking
 ```
 
 ---
@@ -51,7 +77,7 @@ Clinical Note
 .
 ├── step1_extract_entities.py   # Step 1: Extract clinical entities with Qwen-72B-AWQ
 ├── standard_sampling.py        # Baseline: Stochastic sampling UQ (100 samples)
-├── step2_combined_uq.py        # Step 2: Unified UQ pipeline (Logits + CCP + KG + RRF)
+├── step2_combined_uq.py        # Step 2: KG-Augmented UQ pipeline
 ├── uq_analysis.py              # Evaluation: Correlation & ranking metrics vs. sampling baseline
 ├── requirements.txt            # Python dependencies
 ├── LICENSE                     # MIT License
@@ -69,20 +95,20 @@ Clinical Note
 
 | File | Purpose | Key Models Used |
 |------|---------|-----------------|
-| [`step1_extract_entities.py`](file:///home/hmilab/yuchieh/step1_extract_entities.py) | Uses Qwen-72B-AWQ to extract structured clinical entities (diseases, symptoms, PMH) from discharge summaries. Outputs a JSONL file used as KG context seeds in Step 2. | Qwen2.5-72B-Instruct-AWQ |
-| [`standard_sampling.py`](file:///home/hmilab/yuchieh/standard_sampling.py) | Generates 100 stochastic samples per note, parses disease lists, clusters semantically equivalent diseases via bidirectional NLI, and computes frequency-based UQ scores as ground truth. | Llama-3.1-8B / Qwen-7B / Mistral-7B / Gemma-3-4B, PubMedBERT-MNLI-MedNLI |
-| [`step2_combined_uq.py`](file:///home/hmilab/yuchieh/step2_combined_uq.py) | Core UQ pipeline: (A) Teacher-forced logits metrics, (B) CCP via top-k branching + NLI, (C) KG-augmented scoring via SapBERT entity linking + PrimeKG RWR, (D) RRF fusion, and (E) KG-based disease expansion with TF threshold filtering. | Llama-3.1-8B / Qwen-7B / Mistral-7B / Gemma-3-4B, SapBERT, PubMedBERT-MNLI-MedNLI, PrimeKG |
-| [`uq_analysis.py`](file:///home/hmilab/yuchieh/uq_analysis.py) | Evaluates all UQ methods against the standard sampling baseline. Uses Qwen-72B as an alignment judge for cross-method entity matching. Computes NDCG@K, Kendall-τ, MRR, RBO, Precision/Recall@K. | Qwen2.5-72B-Instruct-AWQ |
+| [`step1_extract_entities.py`](file:///home/hmilab/yuchieh/step1_extract_entities.py) |  Extracts clinically relevant entities from clinical narratives for KG-based evidence construction. | Qwen2.5-72B-Instruct |
+| [`standard_sampling.py`](file:///home/hmilab/yuchieh/standard_sampling.py) | Generates 100 stochastic responses per note and constructs the reference confidence distribution by semantically clustering generated disease entities. | Llama-3.1-8B / Qwen-7B / Mistral-7B / Gemma-3-4B, PubMedBERT-MNLI-MedNLI |
+| [`step2_combined_uq.py`](file:///home/hmilab/yuchieh/step2_combined_uq.py) | Core KG-Augmented UQ pipeline: computes LLM confidence, maps clinical entities to PrimeKG, performs coherence- and specificity-aware RWR, expands the candidate set, verifies expanded candidates, and fuses LLM and KG confidence. | Llama-3.1-8B / Qwen-7B / Mistral-7B / Gemma-3-4B, SapBERT, PubMedBERT-MNLI-MedNLI, PrimeKG |
+| [`uq_analysis.py`](file:///home/hmilab/yuchieh/uq_analysis.py) | Evaluates UQ methods against the sampling-based reference using ranking and retrieval metrics. | Qwen2.5-72B-Instruct |
 
 ---
 
 ## Datasets
 
-| Dataset | Source | Text Column |
-|---------|--------|-------------|
-| **MIMIC-III** | Discharge summaries from MIMIC-III | `discharge_summary` |
-| **PMC-Patients** | Structured case reports from PubMed Central | `structured_output` |
-| **MTSamples** | Medical transcription samples | `structured_output` |
+| Dataset | Description | Role |
+|---------|-------------|------|
+| **MIMIC-IV v3.1** | Clinical discharge summaries | Primary evaluation dataset |
+| **PMC-Patients** | Clinical case reports | External evaluation dataset |
+| **MTSamples** | Physician-dictated medical transcriptions | External evaluation dataset |
 
 ---
 
@@ -105,7 +131,7 @@ Place your input datasets and KG resources under a `data/` directory:
 
 ```
 data/
-├── MIMIC_notes_icd_01.csv          # MIMIC-III discharge summaries
+├── MIMIC_notes_icd_01.csv          # MIMIC-IV discharge summaries
 ├── qwen_results_pmc.csv            # PMC-Patients (if applicable)
 ├── qwen_results_mtsamples.csv      # MTSamples (if applicable)
 └── primeKG/
@@ -186,7 +212,7 @@ python standard_sampling.py --dataset mimic --mode full --model gemma
 ### Step 2b: Combined UQ Pipeline
 
 ```bash
-# Run combined UQ (Logits + CCP + KG + RRF)
+# Run combined UQ (Logits + CCP + KG)
 python step2_combined_uq.py --dataset mimic --mode full --model llama
 
 # Customize KG parameters
@@ -218,10 +244,9 @@ python uq_analysis.py --dataset mimic --model llama --ignore_expansion
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `--alpha` | 0.25 | Blending weight for KG score in KG-augmented UQ: `α·KG + (1-α)·Logits` |
-| `--top_k_ccp` | 5 | Number of alternative first-token candidates for CCP |
-| `--top_k_kg` | 5 | Maximum number of KG-expanded disease candidates |
-| `--restart_rate` | 0.2 | Restart probability for Random Walk with Restart |
+| `--alpha` | 0.25 | Weight assigned to KG-derived confidence during LLM/KG fusion |
+| `--top_k_kg` | 5 | Maximum number of KG-expanded disease candidates selected for LLM verification|
+| `--restart_rate` | 0.2 | Restart probability in Personalized Random Walk with Restart |
 | `--tf_threshold_type` | `min_logprob` | Threshold metric for filtering KG-expanded candidates |
 | `--tf_threshold_val` | -12.6 | Threshold value for the selected metric |
 | `--mode` | `full` | Input mode: `full` (complete note) or `sliced` (truncated at Physical Exam) |
@@ -249,10 +274,9 @@ python uq_analysis.py --dataset mimic --model llama --ignore_expansion
 | `uq_neg_ent` | Negative mean entropy |
 | `uq_max_logprob` | Maximum token log-probability |
 | `uq_min_logprob` | Minimum token log-probability |
-| `uq_ccp` | Conformal Candidate Prediction score |
-| `uq_kg` | KG-augmented UQ score (α·KG + (1-α)·Logits) |
+| `uq_ccp` | CCP baseline confidence score |
+| `uq_kg` | Final KG-augmented confidence score |
 | `kg_only` | Pure KG score (normalized RWR probability) |
-| `uq_rrf` | Reciprocal Rank Fusion of Pure Logits + KG |
 | `is_expanded` | Whether this disease was discovered via KG expansion |
 
 ### Evaluation (`correlation_summary_results_*.csv`)
