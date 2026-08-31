@@ -9,15 +9,10 @@
 Large Language Models (LLMs) are increasingly used to extract diagnoses from clinical notes, but quantifying the **reliability** of each predicted diagnosis remains a challenge. This project implements a knowledge graph-augmented uncertainty quantification (UQ) framework for LLM-based clinical diagnosis. The proposed method combines:
 
 | Component | Description |
-
 |-----------|-------------|
-
 | **LLM Confidence** | Sequence-normalized mean token log probability obtained through teacher forcing |
-
 | **KG-based Clinical Plausibility** | Maps clinical entities to PrimeKG and propagates evidence using Personalized Random Walk with Restart (RWR), with coherence- and specificity-aware anchor weighting |
-
 | **KG Expansion** | Retrieves additional clinically plausible diseases from the KG and verifies them using the LLM before adding them to the candidate set |
-
 | **Confidence Fusion** | Combines LLM confidence and KG-derived confidence using a weighted fusion coefficient $\gamma$ |
 
 The framework uses PrimeKG as an external source of structured biomedical evidence rather than constructing a knowledge graph from generated responses.
